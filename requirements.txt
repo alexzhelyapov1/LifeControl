@@ -7,3 +7,8 @@ alembic
 python-jose[cryptography]
 passlib[bcrypt]
 python-dotenv
+
+# Test dependencies
+pytest
+pytest-asyncio
+httpx

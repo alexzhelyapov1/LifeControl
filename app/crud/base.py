@@ -15,3 +15,10 @@ class CRUDBase(Generic[ModelType, CreateSchemaType]):
     async def get(self, db: AsyncSession, id: Any) -> ModelType | None:
         result = await db.execute(select(self.model).filter(self.model.id == id))
         return result.scalars().first()
+
+    async def remove(self, db: AsyncSession, *, id: int) -> ModelType | None:
+        obj = await self.get(db, id=id)
+        if obj:
+            await db.delete(obj)
+            await db.commit()
+        return obj

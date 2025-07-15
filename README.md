@@ -2,6 +2,8 @@
 Multiplatform app for life
 
 1) Что такое alembic
+2) Что такое пагинация
+3) 
 
 
 ### Как запустить (Этап 1)

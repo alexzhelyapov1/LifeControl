@@ -1,5 +1,5 @@
 from typing import AsyncGenerator, Callable
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Query
 from fastapi.security import OAuth2PasswordBearer
 from jose import jwt, JWTError
 from pydantic import ValidationError
@@ -18,9 +18,10 @@ oauth2_scheme = OAuth2PasswordBearer(
     tokenUrl=f"{settings.API_V1_STR}/auth/token"
 )
 
-# ... get_current_user остается без изменений ...
 async def get_current_user(
-    db: AsyncSession = Depends(get_db_session), token: str = Depends(oauth2_scheme)
+    db: AsyncSession = Depends(get_db_session),
+    token: str = Depends(oauth2_scheme),
+    as_user_id: int | None = Query(None, description="Admin: ID of user to view as")
 ) -> User:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -38,10 +39,33 @@ async def get_current_user(
     if token_data.sub is None:
         raise credentials_exception
         
-    user = await user_crud.user.get_by_login(db, login=token_data.sub)
-    if not user:
+    # User making the request based on the token
+    requesting_user = await user_crud.user.get_by_login(db, login=token_data.sub)
+    if not requesting_user:
         raise credentials_exception
-    return user
+
+    # If admin wants to view as another user
+    if as_user_id and requesting_user.is_admin:
+        effective_user = await user_crud.user.get(db, id=as_user_id)
+        if not effective_user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"User with id {as_user_id} not found",
+            )
+        return effective_user
+
+    # Default case: return the user from the token
+    return requesting_user
+
+async def get_current_admin_user(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="The user doesn't have enough privileges",
+        )
+    return current_user
 
 
 # Новая фабрика зависимостей

@@ -16,11 +16,15 @@ class CRUDUser(CRUDBase[User, UserCreate]):
             login=obj_in.login,
             hashed_password=get_password_hash(obj_in.password),
             description=obj_in.description,
-            is_admin=False  # Users cannot register as admins
+            is_admin=False
         )
         db.add(db_obj)
         await db.commit()
         await db.refresh(db_obj)
         return db_obj
+    
+    async def get_all(self, db: AsyncSession) -> list[User]:
+        result = await db.execute(select(self.model).order_by(self.model.login))
+        return result.scalars().all()
 
 user = CRUDUser(User)

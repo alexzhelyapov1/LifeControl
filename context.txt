@@ -1,0 +1,2185 @@
+-----------------------------
+--- File: backend/Dockerfile ---
+-----------------------------
+# Этап 1: Установка зависимостей в виртуальное окружение
+FROM python:3.11-slim as builder
+
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
+
+COPY requirements.txt .
+RUN pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
+
+
+# Этап 2: Финальный образ с приложением
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Создание пользователя без root-прав для безопасности
+RUN addgroup --system nonroot && adduser --system --group nonroot
+
+# Копируем "колеса" зависимостей, собранные на предыдущем этапе
+COPY --from=builder /wheels /wheels
+# Устанавливаем зависимости из "колес"
+RUN pip install --no-cache /wheels/*
+
+# Копируем код приложения и конфигурацию Alembic
+COPY ./app ./app
+COPY ./alembic ./alembic
+COPY alembic.ini .
+
+# Меняем владельца всех файлов на пользователя nonroot
+RUN chown -R nonroot:nonroot /app
+
+# Переключаемся на пользователя nonroot
+USER nonroot
+
+# CMD будет переопределен в docker-compose.yml для гибкости
+EXPOSE 8000
+
+
+-----------------------------
+--- File: backend/pytest.ini ---
+-----------------------------
+[pytest]
+asyncio_mode = auto
+python_files = tests/api/v1/*.py
+
+
+-----------------------------
+--- File: backend/alembic.ini ---
+-----------------------------
+[alembic]
+script_location = alembic
+sqlalchemy.url = postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_SERVER}:${POSTGRES_PORT}/${POSTGRES_DB}
+
+[post_write_hooks]
+hooks = autopep8
+autopep8.type = exec
+autopep8.entrypoint = autopep8
+autopep8.options = --in-place --aggressive --aggressive %(path)s
+
+# ... остальное содержимое файла по умолчанию ...
+
+
+-----------------------------
+--- File: backend/requirements.txt ---
+-----------------------------
+# Core dependencies
+fastapi
+uvicorn[standard]
+sqlalchemy[asyncpg]
+pydantic[email]
+pydantic-settings
+alembic
+python-jose[cryptography]
+passlib[bcrypt]
+python-dotenv
+
+# Test dependencies
+pytest
+pytest-asyncio
+httpx
+
+
+-----------------------------
+--- File: backend/alembic/env.py ---
+-----------------------------
+import asyncio
+from logging.config import fileConfig
+
+from sqlalchemy import pool
+from sqlalchemy.engine import Connection
+from sqlalchemy.ext.asyncio import async_engine_from_config
+
+from alembic import context
+
+# this is the Alembic Config object, which provides
+# access to the values within the .ini file in use.
+config = context.config
+
+# Interpret the config file for Python logging.
+# This line sets up loggers basically.
+if config.config_file_name is not None:
+    fileConfig(config.config_file_name)
+
+# add your model's MetaData object here
+# for 'autogenerate' support
+from app.db.base import Base  # noqa
+from app.core.config import settings # noqa
+
+target_metadata = Base.metadata
+
+# other values from the config, defined by the needs of env.py,
+# can be acquired:
+# my_important_option = config.get_main_option("my_important_option")
+# ... etc.
+
+# Устанавливаем URL базы данных из нашего файла настроек
+config.set_main_option("sqlalchemy.url", str(settings.ASYNC_DATABASE_URI))
+
+
+def run_migrations_offline() -> None:
+    """Run migrations in 'offline' mode.
+
+    This configures the context with just a URL
+    and not an Engine, though an Engine is acceptable
+    here as well.  By skipping the Engine creation
+    we don't even need a DBAPI to be available.
+
+    Calls to context.execute() here emit the given string to the
+    script output.
+
+    """
+    url = config.get_main_option("sqlalchemy.url")
+    context.configure(
+        url=url,
+        target_metadata=target_metadata,
+        literal_binds=True,
+        dialect_opts={"paramstyle": "named"},
+    )
+
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+def do_run_migrations(connection: Connection) -> None:
+    context.configure(connection=connection, target_metadata=target_metadata)
+
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+async def run_migrations_online() -> None:
+    """Run migrations in 'online' mode.
+
+    In this scenario we need to create an Engine
+    and associate a connection with the context.
+
+    """
+    connectable = async_engine_from_config(
+        config.get_section(config.main_section_name),
+        prefix="sqlalchemy.",
+        poolclass=pool.NullPool,
+    )
+
+    async with connectable.connect() as connection:
+        await connection.run_sync(do_run_migrations)
+
+    await connectable.dispose()
+
+
+if context.is_offline_mode():
+    run_migrations_offline()
+else:
+    asyncio.run(run_migrations_online())
+
+
+-----------------------------
+--- File: backend/tests/api/v1/test_spheres.py ---
+-----------------------------
+import pytest
+from httpx import AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.config import settings
+from app.crud.sphere import sphere as sphere_crud
+from app.models import User
+from app.schemas.sphere import SphereCreate
+from tests.utils.user import create_random_user, user_authentication_headers
+
+pytestmark = pytest.mark.asyncio
+
+async def test_create_read_update_delete_sphere(authenticated_client: AsyncClient, db_session, test_user: User):
+    # 1. CREATE
+    sphere_data = {"name": "Test Sphere", "description": "My test sphere"}
+    response = await authenticated_client.post(f"{settings.API_V1_STR}/spheres/", json=sphere_data)
+    assert response.status_code == 201
+    created_sphere = response.json()
+    sphere_id = created_sphere["id"]
+    assert created_sphere["name"] == sphere_data["name"]
+    assert created_sphere["owner"]["id"] == test_user.id
+
+    # 2. READ ONE
+    response = await authenticated_client.get(f"{settings.API_V1_STR}/spheres/{sphere_id}")
+    assert response.status_code == 200
+    read_sphere = response.json()
+    assert read_sphere["name"] == sphere_data["name"]
+
+    # 3. READ ALL
+    response = await authenticated_client.get(f"{settings.API_V1_STR}/spheres/")
+    assert response.status_code == 200
+    assert any(s["id"] == sphere_id for s in response.json())
+
+    # 4. UPDATE
+    update_data = {"name": "Updated Sphere Name"}
+    response = await authenticated_client.put(f"{settings.API_V1_STR}/spheres/{sphere_id}", json=update_data)
+    assert response.status_code == 200
+    assert response.json()["name"] == update_data["name"]
+
+    # 5. DELETE
+    response = await authenticated_client.delete(f"{settings.API_V1_STR}/spheres/{sphere_id}")
+    assert response.status_code == 204
+
+    # VERIFY DELETE
+    response = await authenticated_client.get(f"{settings.API_V1_STR}/spheres/{sphere_id}")
+    assert response.status_code == 404
+
+# --- SCENARIO: VALIDATION ERROR (422) ---
+@pytest.mark.parametrize("invalid_data", [
+    {"name": ""}, # Empty name
+    {"name": "a" * 101}, # Too long name
+])
+async def test_create_sphere_validation_error(authenticated_client: AsyncClient, invalid_data: dict):
+    response = await authenticated_client.post(f"{settings.API_V1_STR}/spheres/", json=invalid_data)
+    assert response.status_code == 422
+
+# --- SCENARIO: UNAUTHORIZED (401) ---
+async def test_read_sphere_unauthorized(client: AsyncClient):
+    response = await client.get(f"{settings.API_V1_STR}/spheres/999")
+    assert response.status_code == 401
+
+# --- SCENARIO: PERMISSION DENIED (403/404) ---
+async def test_access_other_user_sphere_permission_denied(
+    client: AsyncClient, db_session: AsyncSession, test_user: User
+):
+    # User 1 creates a sphere
+    sphere = await sphere_crud.create_with_owner(
+        db_session, obj_in=SphereCreate(name="User1's Private Sphere"), owner_id=test_user.id
+    )
+
+    # User 2 is created
+    user2 = await create_random_user(db_session)
+    user2_headers = user_authentication_headers(login=user2.login)
+
+    # User 2 tries to access User 1's sphere and fails
+    response = await client.get(f"{settings.API_V1_STR}/spheres/{sphere.id}", headers=user2_headers)
+    assert response.status_code == 403 # Forbidden
+
+    # User 2 tries to update it and fails
+    response = await client.put(f"{settings.API_V1_STR}/spheres/{sphere.id}", headers=user2_headers, json={"name": "hacked"})
+    assert response.status_code == 403 # Forbidden
+
+async def test_editor_can_edit_but_not_delete(client: AsyncClient, db_session: AsyncSession, test_user: User):
+    # User 2 (editor) is created
+    editor_user = await create_random_user(db_session)
+    
+    # User 1 creates a sphere and shares it with User 2 as an editor
+    sphere_in = SphereCreate(name="Shared Sphere", editor_ids=[editor_user.id])
+    sphere = await sphere_crud.create_with_owner(db_session, obj_in=sphere_in, owner_id=test_user.id)
+    
+    editor_headers = user_authentication_headers(login=editor_user.login)
+    
+    # Editor can READ the sphere
+    response = await client.get(f"{settings.API_V1_STR}/spheres/{sphere.id}", headers=editor_headers)
+    assert response.status_code == 200
+    
+    # Editor can UPDATE the sphere
+    update_data = {"name": "Updated by Editor"}
+    response = await client.put(f"{settings.API_V1_STR}/spheres/{sphere.id}", headers=editor_headers, json=update_data)
+    assert response.status_code == 200
+    assert response.json()["name"] == update_data["name"]
+
+    # Editor CANNOT DELETE the sphere (our dependency is strict: only owner can delete)
+    response = await client.delete(f"{settings.API_V1_STR}/spheres/{sphere.id}", headers=editor_headers)
+    assert response.status_code == 403 # Forbidden
+
+
+-----------------------------
+--- File: backend/tests/api/v1/test_auth.py ---
+-----------------------------
+import pytest
+from httpx import AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.config import settings
+from app.crud import user as user_crud
+from app.schemas.user import UserCreate
+
+pytestmark = pytest.mark.asyncio
+
+async def test_register_user(client: AsyncClient):
+    login = "testuser@example.com"
+    password = "a_strong_password"
+    response = await client.post(
+        f"{settings.API_V1_STR}/users/register",
+        json={"login": login, "password": password},
+    )
+    assert response.status_code == 201
+    data = response.json()
+    assert data["login"] == login
+    assert "id" in data
+    assert "hashed_password" not in data
+
+async def test_register_existing_user(client: AsyncClient, test_user: User):
+    password = "a_strong_password"
+    response = await client.post(
+        f"{settings.API_V1_STR}/users/register",
+        json={"login": test_user.login, "password": password},
+    )
+    assert response.status_code == 400
+    assert "already exists" in response.json()["detail"]
+
+async def test_get_access_token(client: AsyncClient, db_session: AsyncSession):
+    login = "get.token.user@example.com"
+    password = "testpassword123"
+    user_in = UserCreate(login=login, password=password)
+    await user_crud.create(db_session, obj_in=user_in)
+
+    response = await client.post(
+        f"{settings.API_V1_STR}/auth/token",
+        data={"username": login, "password": password},
+    )
+    assert response.status_code == 200
+    token = response.json()
+    assert "access_token" in token
+    assert token["token_type"] == "bearer"
+
+async def test_get_access_token_wrong_password(client: AsyncClient, test_user: User):
+    response = await client.post(
+        f"{settings.API_V1_STR}/auth/token",
+        data={"username": test_user.login, "password": "wrong_password"},
+    )
+    assert response.status_code == 401
+    assert "Incorrect login or password" in response.json()["detail"]
+
+async def test_get_me(authenticated_client: AsyncClient, test_user: User):
+    response = await authenticated_client.get(f"{settings.API_V1_STR}/users/me")
+    assert response.status_code == 200
+    user_data = response.json()
+    assert user_data["login"] == test_user.login
+
+
+-----------------------------
+--- File: backend/tests/conftest.py ---
+-----------------------------
+import asyncio
+from typing import AsyncGenerator, Generator
+
+import pytest
+from httpx import AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.orm import sessionmaker
+
+from app.api.v1.deps import get_db_session
+from app.core.config import settings
+from app.db.base import Base
+from app.main import app
+from app.models import User
+from tests.utils.user import create_random_user, user_authentication_headers
+
+# Создаем асинхронный движок для тестовой БД.
+# Он будет использовать переменные окружения, переданные Docker'ом для тестов.
+test_engine = create_async_engine(str(settings.ASYNC_DATABASE_URI), echo=False)
+TestingSessionLocal = sessionmaker(
+    bind=test_engine, class_=AsyncSession, expire_on_commit=False, autocommit=False, autoflush=False
+)
+
+# Переопределяем зависимость get_db_session на время тестов,
+# чтобы использовать сессию к тестовой БД.
+async def override_get_db_session() -> AsyncGenerator[AsyncSession, None]:
+    async with TestingSessionLocal() as session:
+        yield session
+
+app.dependency_overrides[get_db_session] = override_get_db_session
+
+@pytest.fixture(scope="session")
+def event_loop() -> Generator:
+    loop = asyncio.get_event_loop_policy().new_event_loop()
+    yield loop
+    loop.close()
+
+@pytest.fixture(scope="session", autouse=True)
+async def setup_database() -> AsyncGenerator[None, None]:
+    # Этот код теперь выполняется внутри Docker-контейнера `api_test`.
+    # Миграции уже применены командой в docker-compose.test.yml.
+    # Поэтому создание и удаление таблиц здесь больше не требуется.
+    yield
+
+@pytest.fixture(scope="function")
+async def db_session() -> AsyncGenerator[AsyncSession, None]:
+    """Предоставляет транзакционную сессию для каждого теста."""
+    async with TestingSessionLocal() as session:
+        yield session
+        await session.rollback()
+
+@pytest.fixture(scope="function")
+async def client() -> AsyncGenerator[AsyncClient, None]:
+    """Фикстура для получения анонимного httpx.AsyncClient."""
+    async with AsyncClient(app=app, base_url="http://test") as c:
+        yield c
+
+@pytest.fixture(scope="function")
+async def test_user(db_session: AsyncSession) -> User:
+    """Фикстура для создания обычного тестового пользователя."""
+    return await create_random_user(db_session)
+
+@pytest.fixture(scope="function")
+def auth_headers(test_user: User) -> dict[str, str]:
+    """Фикстура для получения заголовков аутентификации для обычного пользователя."""
+    return user_authentication_headers(login=test_user.login)
+
+@pytest.fixture
+async def authenticated_client(client: AsyncClient, auth_headers: dict) -> AsyncClient:
+    """Фикстура, предоставляющая AsyncClient с уже установленным заголовком авторизации."""
+    client.headers.update(auth_headers)
+    yield client
+
+
+-----------------------------
+--- File: backend/tests/utils/user.py ---
+-----------------------------
+import random
+import string
+
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.crud.user import user as user_crud
+from app.models.user import User
+from app.schemas.user import UserCreate
+from app.core.security import create_access_token
+
+def random_lower_string() -> str:
+    return "".join(random.choices(string.ascii_lowercase, k=32))
+
+def random_login() -> str:
+    return f"user_{random_lower_string()[:8]}"
+
+async def create_random_user(db: AsyncSession, is_admin: bool = False) -> User:
+    login = random_login()
+    password = random_lower_string()
+    user_in = UserCreate(login=login, password=password)
+    user = await user_crud.create(db, obj_in=user_in)
+    if is_admin:
+        user.is_admin = True
+        await db.commit()
+        await db.refresh(user)
+    return user
+
+def user_authentication_headers(
+    *, login: str, password: str = "password"
+) -> dict[str, str]:
+    # Note: In a real scenario, you'd get the token from the /token endpoint.
+    # For testing, we create it directly to simplify.
+    # To do this "properly", you'd need the client fixture to make a request.
+    # This is a common shortcut in tests.
+    access_token = create_access_token(login)
+    return {"Authorization": f"Bearer {access_token}"}
+
+
+-----------------------------
+--- File: backend/app/api/v1/deps.py ---
+-----------------------------
+from typing import AsyncGenerator, Callable
+from fastapi import Depends, HTTPException, status, Query
+from fastapi.security import OAuth2PasswordBearer
+from jose import jwt, JWTError
+from pydantic import ValidationError
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from app.core import security
+from app.core.config import settings
+from app.crud import user as user_crud
+from app.crud.base import CRUDBase
+from app.db.session import get_db_session
+from app.models import User, Sphere, Location
+from app.schemas.token import TokenPayload
+
+oauth2_scheme = OAuth2PasswordBearer(
+    tokenUrl=f"{settings.API_V1_STR}/auth/token"
+)
+
+async def get_current_user(
+    db: AsyncSession = Depends(get_db_session),
+    token: str = Depends(oauth2_scheme),
+    as_user_id: int | None = Query(None, description="Admin: ID of user to view as")
+) -> User:
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(
+            token, settings.SECRET_KEY, algorithms=[security.ALGORITHM]
+        )
+        token_data = TokenPayload(sub=payload.get("sub"))
+    except (JWTError, ValidationError):
+        raise credentials_exception
+    
+    if token_data.sub is None:
+        raise credentials_exception
+        
+    # User making the request based on the token
+    requesting_user = await user_crud.user.get_by_login(db, login=token_data.sub)
+    if not requesting_user:
+        raise credentials_exception
+
+    # If admin wants to view as another user
+    if as_user_id and requesting_user.is_admin:
+        effective_user = await user_crud.user.get(db, id=as_user_id)
+        if not effective_user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"User with id {as_user_id} not found",
+            )
+        return effective_user
+
+    # Default case: return the user from the token
+    return requesting_user
+
+async def get_current_admin_user(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="The user doesn't have enough privileges",
+        )
+    return current_user
+
+
+# Новая фабрика зависимостей
+def get_resource_with_permissions_factory(
+    crud_repo: CRUDBase,
+    permission_level: str  # "read" or "edit"
+) -> Callable:
+    async def get_resource(
+        resource_id: int,
+        db: AsyncSession = Depends(get_db_session),
+        current_user: User = Depends(get_current_user),
+    ):
+        # Eager load relationships needed for permission checks
+        query_options = [
+            selectinload(crud_repo.model.owner),
+            selectinload(crud_repo.model.readers),
+            selectinload(crud_repo.model.editors),
+        ]
+        
+        # Загружаем ресурс с предзагрузкой связей
+        result = await db.execute(
+            crud_repo.model.__table__.select()
+            .where(crud_repo.model.id == resource_id)
+            .options(*query_options)
+        )
+        resource = (await db.execute(
+            select(crud_repo.model)
+            .where(crud_repo.model.id == resource_id)
+            .options(*query_options))
+        ).scalars().first()
+
+
+        if not resource:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
+
+        if current_user.is_admin:
+            return resource
+
+        if current_user.id == resource.user_id:
+            return resource
+
+        user_is_reader = any(reader.id == current_user.id for reader in resource.readers)
+        user_is_editor = any(editor.id == current_user.id for editor in resource.editors)
+
+        if permission_level == "read" and (user_is_reader or user_is_editor):
+            return resource
+        
+        if permission_level == "edit" and user_is_editor:
+            return resource
+
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to access this resource",
+        )
+    return get_resource
+
+# Создаем конкретные зависимости для использования в эндпоинтах
+from app.crud.sphere import sphere as sphere_crud
+from app.crud.location import location as location_crud
+
+get_sphere_with_read_permission = get_resource_with_permissions_factory(sphere_crud, "read")
+get_sphere_with_edit_permission = get_resource_with_permissions_factory(sphere_crud, "edit")
+get_location_with_read_permission = get_resource_with_permissions_factory(location_crud, "read")
+get_location_with_edit_permission = get_resource_with_permissions_factory(location_crud, "edit")
+
+
+-----------------------------
+--- File: backend/app/api/v1/endpoints/dashboard.py ---
+-----------------------------
+from fastapi import APIRouter, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.v1.deps import get_current_user, get_db_session
+from app.crud.dashboard import dashboard as dashboard_crud
+from app.models import User
+from app.schemas.dashboard import DashboardData
+
+router = APIRouter()
+
+@router.get("/", response_model=DashboardData)
+async def read_dashboard_data(
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Get aggregated dashboard data for the current user.
+    If an admin uses `as_user_id` query param, the data will be for that user.
+    """
+    data = await dashboard_crud.get_dashboard_data(db, user_id=current_user.id)
+    return data
+
+
+-----------------------------
+--- File: backend/app/api/v1/endpoints/records.py ---
+-----------------------------
+from typing import Any
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.v1.deps import get_current_user, get_db_session
+from app.crud.accounting_record import record as record_crud
+from app.crud.sphere import sphere as sphere_crud
+from app.crud.location import location as location_crud
+from app.models import User
+from app.schemas.accounting_record import RecordCreate, RecordRead, PaginatedRecordRead
+
+router = APIRouter()
+
+async def _validate_resource_permissions(db: AsyncSession, user: User, sphere_ids: list[int] = [], location_ids: list[int] = []):
+    """
+    Helper to check if a user has EDIT permissions on all provided spheres and locations.
+    """
+    for sphere_id in set(sphere_ids):
+        sphere = await sphere_crud.get(db, id=sphere_id)
+        if not sphere:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"Sphere with id {sphere_id} not found.")
+        if user.id != sphere.user_id and not any(editor.id == user.id for editor in sphere.editors) and not user.is_admin:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, f"You don't have edit permissions for sphere '{sphere.name}'.")
+    
+    for location_id in set(location_ids):
+        location = await location_crud.get(db, id=location_id)
+        if not location:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"Location with id {location_id} not found.")
+        if user.id != location.user_id and not any(editor.id == user.id for editor in location.editors) and not user.is_admin:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, f"You don't have edit permissions for location '{location.name}'.")
+
+
+@router.get("/", response_model=PaginatedRecordRead)
+async def read_records(
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user),
+    page: int = Query(1, ge=1, description="Page number"),
+    size: int = Query(20, ge=1, le=100, description="Page size"),
+):
+    """
+    Retrieve paginated financial records for the current user.
+    """
+    paginated_records = await record_crud.get_multi_for_user_paginated(
+        db, user_id=current_user.id, page=page, size=size
+    )
+    return paginated_records
+
+
+@router.post("/", response_model=list[RecordRead], status_code=status.HTTP_201_CREATED)
+async def create_record(
+    *,
+    db: AsyncSession = Depends(get_db_session),
+    record_in: RecordCreate,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Create a new financial record.
+    - **type: "Income"**: Creates a single income record.
+    - **type: "Spend"**: Creates a single spend record.
+    - **type: "Transfer"**: Creates a pair of records (spend + income) to represent a transfer.
+    """
+    spheres_to_check = []
+    locations_to_check = []
+
+    if record_in.type in ["Income", "Spend"]:
+        spheres_to_check.append(record_in.sphere_id)
+        locations_to_check.append(record_in.location_id)
+    elif record_in.type == "Transfer":
+        if record_in.transfer_type == "location":
+            spheres_to_check.append(record_in.sphere_id)
+            locations_to_check.extend([record_in.from_location_id, record_in.to_location_id])
+        elif record_in.transfer_type == "sphere":
+            spheres_to_check.extend([record_in.from_sphere_id, record_in.to_sphere_id])
+            locations_to_check.append(record_in.location_id)
+
+    await _validate_resource_permissions(db, current_user, sphere_ids=spheres_to_check, location_ids=locations_to_check)
+    
+    created_records = await record_crud.create_record(db, obj_in=record_in, owner_id=current_user.id)
+    return created_records
+
+
+-----------------------------
+--- File: backend/app/api/v1/endpoints/locations.py ---
+-----------------------------
+from fastapi import APIRouter, Depends, status, Response
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.v1.deps import get_current_user, get_db_session, get_location_with_read_permission, get_location_with_edit_permission
+from app.crud.location import location as location_crud
+from app.models import User, Location
+from app.schemas.location import LocationCreate, LocationRead, LocationUpdate
+
+router = APIRouter()
+
+@router.get("/", response_model=list[LocationRead])
+async def read_locations(
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Retrieve all locations the user has access to.
+    """
+    locations = await location_crud.get_multi_for_user(db, user_id=current_user.id)
+    return locations
+
+@router.post("/", response_model=LocationRead, status_code=status.HTTP_201_CREATED)
+async def create_location(
+    *,
+    db: AsyncSession = Depends(get_db_session),
+    location_in: LocationCreate,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Create a new location.
+    """
+    location = await location_crud.create_with_owner(db, obj_in=location_in, owner_id=current_user.id)
+    return location
+
+@router.get("/{location_id}", response_model=LocationRead)
+async def read_location(
+    *,
+    location: Location = Depends(get_location_with_read_permission)
+):
+    """
+    Get a specific location by id.
+    """
+    return location
+
+@router.put("/{location_id}", response_model=LocationRead)
+async def update_location(
+    *,
+    db: AsyncSession = Depends(get_db_session),
+    location_in: LocationUpdate,
+    location_to_update: Location = Depends(get_location_with_edit_permission)
+):
+    """
+    Update a location.
+    """
+    updated_location = await location_crud.update(db, db_obj=location_to_update, obj_in=location_in)
+    return updated_location
+
+@router.delete("/{location_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_location(
+    *,
+    db: AsyncSession = Depends(get_db_session),
+    location_to_delete: Location = Depends(get_location_with_edit_permission)
+):
+    """
+    Delete a location.
+    """
+    await location_crud.remove(db, id=location_to_delete.id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+-----------------------------
+--- File: backend/app/api/v1/endpoints/auth.py ---
+-----------------------------
+from datetime import timedelta
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordRequestForm
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core import security
+from app.core.config import settings
+from app.crud.user import user as user_crud
+from app.schemas.token import Token
+from app.api.v1.deps import get_db_session
+
+router = APIRouter()
+
+@router.post("/token", response_model=Token)
+async def login_for_access_token(
+    db: AsyncSession = Depends(get_db_session),
+    form_data: Annotated[OAuth2PasswordRequestForm, Depends()] = Depends()
+):
+    """
+    OAuth2 compatible token login, get an access token for future requests.
+    """
+    user = await user_crud.get_by_login(db, login=form_data.username)
+    if not user or not security.verify_password(form_data.password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect login or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = security.create_access_token(
+        user.login, expires_delta=access_token_expires
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
+
+
+-----------------------------
+--- File: backend/app/api/v1/endpoints/users.py ---
+-----------------------------
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.v1.deps import get_current_user, get_db_session
+from app.crud.user import user as user_crud
+from app.models.user import User
+from app.schemas.user import UserCreate, UserRead
+
+router = APIRouter()
+
+@router.post("/register", response_model=UserRead, status_code=status.HTTP_201_CREATED)
+async def register_user(
+    *,
+    db: AsyncSession = Depends(get_db_session),
+    user_in: UserCreate,
+):
+    """
+    Create new user.
+    """
+    user = await user_crud.get_by_login(db, login=user_in.login)
+    if user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="The user with this login already exists in the system.",
+        )
+    user = await user_crud.create(db, obj_in=user_in)
+    return user
+
+@router.get("/me", response_model=UserRead)
+async def read_user_me(
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Get current user.
+    """
+    return current_user
+
+
+-----------------------------
+--- File: backend/app/api/v1/endpoints/spheres.py ---
+-----------------------------
+from typing import Any
+from fastapi import APIRouter, Depends, HTTPException, status, Response
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.v1.deps import get_current_user, get_db_session, get_sphere_with_read_permission, get_sphere_with_edit_permission
+from app.crud.sphere import sphere as sphere_crud
+from app.models import User, Sphere
+from app.schemas.sphere import SphereCreate, SphereRead, SphereUpdate
+
+router = APIRouter()
+
+@router.get("/", response_model=list[SphereRead])
+async def read_spheres(
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Retrieve all spheres the user has access to.
+    """
+    spheres = await sphere_crud.get_multi_for_user(db, user_id=current_user.id)
+    return spheres
+
+@router.post("/", response_model=SphereRead, status_code=status.HTTP_201_CREATED)
+async def create_sphere(
+    *,
+    db: AsyncSession = Depends(get_db_session),
+    sphere_in: SphereCreate,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Create a new sphere.
+    """
+    sphere = await sphere_crud.create_with_owner(db, obj_in=sphere_in, owner_id=current_user.id)
+    return sphere
+
+@router.get("/{sphere_id}", response_model=SphereRead)
+async def read_sphere(
+    *,
+    sphere: Sphere = Depends(get_sphere_with_read_permission)
+):
+    """
+    Get a specific sphere by id.
+    """
+    return sphere
+
+@router.put("/{sphere_id}", response_model=SphereRead)
+async def update_sphere(
+    *,
+    db: AsyncSession = Depends(get_db_session),
+    sphere_in: SphereUpdate,
+    sphere_to_update: Sphere = Depends(get_sphere_with_edit_permission)
+):
+    """
+    Update a sphere.
+    """
+    updated_sphere = await sphere_crud.update(db, db_obj=sphere_to_update, obj_in=sphere_in)
+    return updated_sphere
+
+@router.delete("/{sphere_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_sphere(
+    *,
+    db: AsyncSession = Depends(get_db_session),
+    sphere_to_delete: Sphere = Depends(get_sphere_with_edit_permission)
+):
+    """
+    Delete a sphere.
+    """
+    await sphere_crud.remove(db, id=sphere_to_delete.id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+-----------------------------
+--- File: backend/app/api/v1/endpoints/admin.py ---
+-----------------------------
+from fastapi import APIRouter, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.v1.deps import get_current_admin_user, get_db_session
+from app.crud.user import user as user_crud
+from app.models import User
+from app.schemas.user import UserRead
+
+router = APIRouter()
+
+@router.get("/users", response_model=list[UserRead])
+async def read_users(
+    db: AsyncSession = Depends(get_db_session),
+    current_admin: User = Depends(get_current_admin_user),
+):
+    """
+    Retrieve all users. (Admin only)
+    """
+    users = await user_crud.get_all(db)
+    return users
+
+
+-----------------------------
+--- File: backend/app/api/v1/api.py ---
+-----------------------------
+from fastapi import APIRouter
+
+from app.api.v1.endpoints import auth, users, spheres, locations, records, dashboard, admin
+
+api_router = APIRouter()
+api_router.include_router(auth.router, prefix="/auth", tags=["Auth"])
+api_router.include_router(users.router, prefix="/users", tags=["Users"])
+api_router.include_router(spheres.router, prefix="/spheres", tags=["Spheres"])
+api_router.include_router(locations.router, prefix="/locations", tags=["Locations"])
+api_router.include_router(records.router, prefix="/records", tags=["Records"])
+api_router.include_router(dashboard.router, prefix="/dashboard", tags=["Dashboard"])
+api_router.include_router(admin.router, prefix="/admin", tags=["Admin"])
+
+
+-----------------------------
+--- File: backend/app/core/security.py ---
+-----------------------------
+from datetime import datetime, timedelta, timezone
+from typing import Any, Union
+
+from jose import jwt
+from passlib.context import CryptContext
+
+from app.core.config import settings
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+ALGORITHM = settings.ALGORITHM
+
+def create_access_token(
+    subject: Union[str, Any], expires_delta: timedelta | None = None
+) -> str:
+    if expires_delta:
+        expire = datetime.now(timezone.utc) + expires_delta
+    else:
+        expire = datetime.now(timezone.utc) + timedelta(
+            minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
+        )
+    to_encode = {"exp": expire, "sub": str(subject)}
+    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password: str) -> str:
+    return pwd_context.hash(password)
+
+
+-----------------------------
+--- File: backend/app/core/config.py ---
+-----------------------------
+from pydantic_settings import BaseSettings
+from pydantic import PostgresDsn, computed_field
+
+class Settings(BaseSettings):
+    PROJECT_NAME: str = "Финансист"
+    API_V1_STR: str = "/api/v1"
+    
+    # JWT Settings
+    SECRET_KEY: str
+    ALGORITHM: str
+    ACCESS_TOKEN_EXPIRE_MINUTES: int
+
+    # Database settings
+    POSTGRES_SERVER: str
+    POSTGRES_USER: str
+    POSTGRES_PASSWORD: str
+    POSTGRES_DB: str
+    POSTGRES_PORT: int
+
+    @computed_field
+    @property
+    def ASYNC_DATABASE_URI(self) -> PostgresDsn:
+        return PostgresDsn.build(
+            scheme="postgresql+asyncpg",
+            username=self.POSTGRES_USER,
+            password=self.POSTGRES_PASSWORD,
+            host=self.POSTGRES_SERVER,
+            port=self.POSTGRES_PORT,
+            path=self.POSTGRES_DB,
+        )
+
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+
+settings = Settings()
+
+
+-----------------------------
+--- File: backend/app/models/location.py ---
+-----------------------------
+from sqlalchemy import Column, ForeignKey, Integer, String, Table
+from sqlalchemy.orm import relationship
+
+from app.db.base_class import Base
+
+location_readers_association = Table(
+    'location_readers_association', Base.metadata,
+    Column('location_id', Integer, ForeignKey('locations.id'), primary_key=True),
+    Column('user_id', Integer, ForeignKey('users.id'), primary_key=True)
+)
+
+location_editors_association = Table(
+    'location_editors_association', Base.metadata,
+    Column('location_id', Integer, ForeignKey('locations.id'), primary_key=True),
+    Column('user_id', Integer, ForeignKey('users.id'), primary_key=True)
+)
+
+class Location(Base):
+    name = Column(String(100), nullable=False, index=True)
+    description = Column(String(255), nullable=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+
+    owner = relationship("User", back_populates="locations")
+
+    readers = relationship("User", secondary=location_readers_association)
+    editors = relationship("User", secondary=location_editors_association)
+
+
+-----------------------------
+--- File: backend/app/models/base_class.py ---
+-----------------------------
+from sqlalchemy import Column, Integer
+from sqlalchemy.ext.declarative import as_declarative, declared_attr
+
+@as_declarative()
+class Base:
+    id: int = Column(Integer, primary_key=True, index=True)
+    __name__: str
+
+    # Generate __tablename__ automatically
+    @declared_attr
+    def __tablename__(cls) -> str:
+        return cls.__name__.lower() + "s"
+
+
+-----------------------------
+--- File: backend/app/models/accounting_record.py ---
+-----------------------------
+import enum
+from sqlalchemy import Column, Integer, String, Numeric, Boolean, ForeignKey, TIMESTAMP, Enum
+from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
+
+from app.db.base_class import Base
+
+class OperationType(enum.Enum):
+    INCOME = "Income"
+    SPEND = "Spend"
+
+class AccountingRecord(Base):
+    accounting_id = Column(Integer, nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    
+    operation_type = Column(Enum(OperationType), nullable=False)
+    is_transfer = Column(Boolean, default=False, nullable=False)
+
+    sphere_id = Column(Integer, ForeignKey('spheres.id', ondelete='SET NULL'), nullable=True)
+    location_id = Column(Integer, ForeignKey('locations.id', ondelete='SET NULL'), nullable=False)
+    
+    sum = Column(Numeric(12, 2), nullable=False)
+    description = Column(String(255), nullable=True)
+    date = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    
+    owner = relationship("User", back_populates="records")
+    sphere = relationship("Sphere")
+    location = relationship("Location")
+
+
+-----------------------------
+--- File: backend/app/models/user.py ---
+-----------------------------
+from sqlalchemy import Boolean, Column, Integer, String, Table, ForeignKey
+from sqlalchemy.orm import relationship
+
+from app.db.base_class import Base
+
+# Association table for friends (many-to-many self-referencing)
+user_friends_association = Table(
+    'user_friends_association', Base.metadata,
+    Column('user_id', Integer, ForeignKey('users.id'), primary_key=True),
+    Column('friend_id', Integer, ForeignKey('users.id'), primary_key=True)
+)
+
+class User(Base):
+    login = Column(String(50), unique=True, index=True, nullable=False)
+    hashed_password = Column(String, nullable=False)
+    description = Column(String(255), nullable=True)
+    is_admin = Column(Boolean(), default=False)
+    
+    friends = relationship(
+        "User",
+        secondary=user_friends_association,
+        primaryjoin=id == user_friends_association.c.user_id,
+        secondaryjoin=id == user_friends_association.c.friend_id,
+        backref="friend_of"
+    )
+    
+    # Relationships to owned items
+    spheres = relationship("Sphere", back_populates="owner", cascade="all, delete-orphan")
+    locations = relationship("Location", back_populates="owner", cascade="all, delete-orphan")
+    records = relationship("AccountingRecord", back_populates="owner", cascade="all, delete-orphan")
+
+
+-----------------------------
+--- File: backend/app/models/sphere.py ---
+-----------------------------
+from sqlalchemy import Column, ForeignKey, Integer, String, Table
+from sqlalchemy.orm import relationship
+
+from app.db.base_class import Base
+
+sphere_readers_association = Table(
+    'sphere_readers_association', Base.metadata,
+    Column('sphere_id', Integer, ForeignKey('spheres.id'), primary_key=True),
+    Column('user_id', Integer, ForeignKey('users.id'), primary_key=True)
+)
+
+sphere_editors_association = Table(
+    'sphere_editors_association', Base.metadata,
+    Column('sphere_id', Integer, ForeignKey('spheres.id'), primary_key=True),
+    Column('user_id', Integer, ForeignKey('users.id'), primary_key=True)
+)
+
+class Sphere(Base):
+    name = Column(String(100), nullable=False, index=True)
+    description = Column(String(255), nullable=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+
+    owner = relationship("User", back_populates="spheres")
+
+    readers = relationship("User", secondary=sphere_readers_association)
+    editors = relationship("User", secondary=sphere_editors_association)
+
+
+-----------------------------
+--- File: backend/app/crud/dashboard.py ---
+-----------------------------
+from sqlalchemy import func, select, case
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
+
+from app.models import AccountingRecord, Location, Sphere
+from app.models.accounting_record import OperationType
+from app.schemas.dashboard import DashboardData, BalanceItem
+
+class CRUDDashboard:
+    async def get_dashboard_data(self, db: AsyncSession, *, user_id: int) -> DashboardData:
+        # 1. Calculate total balance across all locations
+        total_balance_query = (
+            select(
+                func.sum(
+                    case(
+                        (AccountingRecord.operation_type == OperationType.INCOME, AccountingRecord.sum),
+                        (AccountingRecord.operation_type == OperationType.SPEND, -AccountingRecord.sum),
+                    )
+                )
+            )
+            .where(AccountingRecord.user_id == user_id)
+        )
+        total_balance_res = await db.execute(total_balance_query)
+        total_balance = total_balance_res.scalar_one_or_none() or 0.0
+
+        # 2. Calculate balance per location
+        location_balance_query = (
+            select(
+                Location.id,
+                Location.name,
+                func.sum(
+                    case(
+                        (AccountingRecord.operation_type == OperationType.INCOME, AccountingRecord.sum),
+                        (AccountingRecord.operation_type == OperationType.SPEND, -AccountingRecord.sum),
+                    )
+                ).label("balance")
+            )
+            .join(AccountingRecord, AccountingRecord.location_id == Location.id)
+            .where(AccountingRecord.user_id == user_id)
+            .group_by(Location.id, Location.name)
+            .order_by(Location.name)
+        )
+        location_balances_res = await db.execute(location_balance_query)
+        locations_balance = [BalanceItem(id=row.id, name=row.name, balance=float(row.balance)) for row in location_balances_res.all()]
+        
+        # 3. Calculate balance per sphere (Income - Spend, non-transfers)
+        sphere_balance_query = (
+            select(
+                Sphere.id,
+                Sphere.name,
+                func.sum(
+                     case(
+                        (AccountingRecord.operation_type == OperationType.INCOME, AccountingRecord.sum),
+                        (AccountingRecord.operation_type == OperationType.SPEND, -AccountingRecord.sum),
+                    )
+                ).label("balance")
+            )
+            .join(AccountingRecord, AccountingRecord.sphere_id == Sphere.id)
+            .where(
+                AccountingRecord.user_id == user_id,
+                AccountingRecord.is_transfer == False
+            )
+            .group_by(Sphere.id, Sphere.name)
+            .order_by(Sphere.name)
+        )
+        sphere_balances_res = await db.execute(sphere_balance_query)
+        spheres_balance = [BalanceItem(id=row.id, name=row.name, balance=float(row.balance)) for row in sphere_balances_res.all()]
+
+        return DashboardData(
+            total_balance=float(total_balance),
+            locations_balance=locations_balance,
+            spheres_balance=spheres_balance
+        )
+
+dashboard = CRUDDashboard()
+
+
+-----------------------------
+--- File: backend/app/crud/base.py ---
+-----------------------------
+from typing import Any, Generic, Type, TypeVar
+from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
+
+from app.db.base_class import Base
+
+ModelType = TypeVar("ModelType", bound=Base)
+CreateSchemaType = TypeVar("CreateSchemaType", bound=BaseModel)
+
+class CRUDBase(Generic[ModelType, CreateSchemaType]):
+    def __init__(self, model: Type[ModelType]):
+        self.model = model
+
+    async def get(self, db: AsyncSession, id: Any) -> ModelType | None:
+        result = await db.execute(select(self.model).filter(self.model.id == id))
+        return result.scalars().first()
+
+    async def remove(self, db: AsyncSession, *, id: int) -> ModelType | None:
+        obj = await self.get(db, id=id)
+        if obj:
+            await db.delete(obj)
+            await db.commit()
+        return obj
+
+
+-----------------------------
+--- File: backend/app/crud/location.py ---
+-----------------------------
+from sqlalchemy import or_
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
+from sqlalchemy.orm import selectinload
+
+from app.crud.base import CRUDBase
+from app.models import Location, User
+from app.schemas.location import LocationCreate, LocationUpdate
+
+class CRUDLocation(CRUDBase[Location, LocationCreate]):
+    async def get_multi_for_user(self, db: AsyncSession, *, user_id: int) -> list[Location]:
+        """
+        Get all locations a user has access to (owner, reader, or editor).
+        """
+        query = (
+            select(self.model)
+            .options(selectinload(self.model.owner))
+            .where(
+                or_(
+                    self.model.user_id == user_id,
+                    self.model.readers.any(User.id == user_id),
+                    self.model.editors.any(User.id == user_id)
+                )
+            )
+            .order_by(self.model.name)
+        )
+        result = await db.execute(query)
+        return result.scalars().unique().all()
+
+    async def create_with_owner(
+        self, db: AsyncSession, *, obj_in: LocationCreate, owner_id: int
+    ) -> Location:
+        # Fetch users for relationships
+        readers = []
+        if obj_in.reader_ids:
+            result = await db.execute(select(User).where(User.id.in_(obj_in.reader_ids)))
+            readers = result.scalars().all()
+
+        editors = []
+        if obj_in.editor_ids:
+            result = await db.execute(select(User).where(User.id.in_(obj_in.editor_ids)))
+            editors = result.scalars().all()
+        
+        db_obj = self.model(
+            name=obj_in.name,
+            description=obj_in.description,
+            user_id=owner_id,
+            readers=readers,
+            editors=editors,
+        )
+        db.add(db_obj)
+        await db.commit()
+        await db.refresh(db_obj, ["owner"])
+        return db_obj
+
+    async def update(
+        self, db: AsyncSession, *, db_obj: Location, obj_in: LocationUpdate
+    ) -> Location:
+        update_data = obj_in.model_dump(exclude_unset=True)
+
+        # Handle relationships separately
+        if "reader_ids" in update_data:
+            reader_ids = update_data.pop("reader_ids")
+            if reader_ids is not None:
+                result = await db.execute(select(User).where(User.id.in_(reader_ids)))
+                db_obj.readers = result.scalars().all()
+
+        if "editor_ids" in update_data:
+            editor_ids = update_data.pop("editor_ids")
+            if editor_ids is not None:
+                result = await db.execute(select(User).where(User.id.in_(editor_ids)))
+                db_obj.editors = result.scalars().all()
+        
+        # Update scalar fields
+        for field, value in update_data.items():
+            setattr(db_obj, field, value)
+
+        db.add(db_obj)
+        await db.commit()
+        await db.refresh(db_obj, ["owner"])
+        return db_obj
+
+
+location = CRUDLocation(Location)
+
+
+-----------------------------
+--- File: backend/app/crud/accounting_record.py ---
+-----------------------------
+import math
+from typing import Union
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
+from sqlalchemy import func, or_
+from sqlalchemy.orm import selectinload
+
+from app.crud.base import CRUDBase
+from app.models import AccountingRecord, User, Sphere, Location
+from app.models.accounting_record import OperationType
+from app.schemas.accounting_record import RecordCreate, RecordCreateIncome, RecordCreateSpend, RecordCreateTransfer
+
+class CRUDAccountingRecord(CRUDBase[AccountingRecord, RecordCreate]):
+    
+    async def get_next_accounting_id(self, db: AsyncSession) -> int:
+        result = await db.execute(select(func.max(self.model.accounting_id)))
+        max_id = result.scalar_one_or_none()
+        return (max_id or 0) + 1
+
+    async def get_multi_for_user_paginated(
+        self, db: AsyncSession, *, user_id: int, page: int = 1, size: int = 20
+    ) -> dict:
+        """
+        Get paginated records for a user.
+        """
+        if page < 1: page = 1
+        if size < 1: size = 1
+
+        # Query for total count
+        count_query = select(func.count(self.model.id)).where(self.model.user_id == user_id)
+        total_count = (await db.execute(count_query)).scalar_one()
+
+        # Query for items
+        offset = (page - 1) * size
+        query = (
+            select(self.model)
+            .where(self.model.user_id == user_id)
+            .options(
+                selectinload(self.model.sphere).selectinload(Sphere.owner), 
+                selectinload(self.model.location).selectinload(Location.owner)
+            )
+            .order_by(self.model.date.desc(), self.model.id.desc())
+            .offset(offset)
+            .limit(size)
+        )
+        result = await db.execute(query)
+        items = result.scalars().all()
+
+        return {
+            "total": total_count,
+            "page": page,
+            "size": size,
+            "pages": math.ceil(total_count / size) if total_count > 0 else 0,
+            "items": items
+        }
+
+    async def create_record(
+        self, db: AsyncSession, *, obj_in: RecordCreate, owner_id: int
+    ) -> list[AccountingRecord]:
+        
+        acc_id = await self.get_next_accounting_id(db)
+        created_records = []
+
+        if isinstance(obj_in, (RecordCreateIncome, RecordCreateSpend)):
+            op_type = OperationType.INCOME if isinstance(obj_in, RecordCreateIncome) else OperationType.SPEND
+            record = self.model(
+                accounting_id=acc_id,
+                user_id=owner_id,
+                operation_type=op_type,
+                sum=obj_in.sum,
+                location_id=obj_in.location_id,
+                sphere_id=obj_in.sphere_id,
+                is_transfer=False
+            )
+            created_records.append(record)
+        
+        elif isinstance(obj_in, RecordCreateTransfer):
+            common_data = {"accounting_id": acc_id, "user_id": owner_id, "is_transfer": True}
+            if obj_in.description: common_data["description"] = obj_in.description
+            if obj_in.date: common_data["date"] = obj_in.date
+
+            if obj_in.transfer_type == 'location':
+                spend_rec = self.model(
+                    **common_data,
+                    operation_type=OperationType.SPEND,
+                    sum=obj_in.sum,
+                    location_id=obj_in.from_location_id,
+                    sphere_id=obj_in.sphere_id
+                )
+                income_rec = self.model(
+                    **common_data,
+                    operation_type=OperationType.INCOME,
+                    sum=obj_in.sum,
+                    location_id=obj_in.to_location_id,
+                    sphere_id=obj_in.sphere_id
+                )
+                created_records.extend([spend_rec, income_rec])
+            
+            elif obj_in.transfer_type == 'sphere':
+                spend_rec = self.model(
+                    **common_data,
+                    operation_type=OperationType.SPEND,
+                    sum=obj_in.sum,
+                    location_id=obj_in.location_id,
+                    sphere_id=obj_in.from_sphere_id
+                )
+                income_rec = self.model(
+                    **common_data,
+                    operation_type=OperationType.INCOME,
+                    sum=obj_in.sum,
+                    location_id=obj_in.location_id,
+                    sphere_id=obj_in.to_sphere_id
+                )
+                created_records.extend([spend_rec, income_rec])
+
+        if not created_records:
+            return [] # Should not happen if validation passes
+
+        db.add_all(created_records)
+        await db.commit()
+        for rec in created_records:
+            await db.refresh(rec, ["sphere", "location", "sphere.owner", "location.owner"])
+        return created_records
+
+    async def remove_by_accounting_id(self, db: AsyncSession, *, accounting_id: int, user_id: int) -> int:
+        """ Deletes all records for a given accounting_id and user_id. Returns number of deleted rows. """
+        query = self.model.__table__.delete().where(
+            self.model.accounting_id == accounting_id,
+            self.model.user_id == user_id
+        )
+        result = await db.execute(query)
+        await db.commit()
+        return result.rowcount
+
+record = CRUDAccountingRecord(AccountingRecord)
+
+
+-----------------------------
+--- File: backend/app/crud/user.py ---
+-----------------------------
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
+
+from app.crud.base import CRUDBase
+from app.models.user import User
+from app.schemas.user import UserCreate
+from app.core.security import get_password_hash
+
+class CRUDUser(CRUDBase[User, UserCreate]):
+    async def get_by_login(self, db: AsyncSession, *, login: str) -> User | None:
+        result = await db.execute(select(self.model).filter(self.model.login == login))
+        return result.scalars().first()
+
+    async def create(self, db: AsyncSession, *, obj_in: UserCreate) -> User:
+        db_obj = self.model(
+            login=obj_in.login,
+            hashed_password=get_password_hash(obj_in.password),
+            description=obj_in.description,
+            is_admin=False
+        )
+        db.add(db_obj)
+        await db.commit()
+        await db.refresh(db_obj)
+        return db_obj
+    
+    async def get_all(self, db: AsyncSession) -> list[User]:
+        result = await db.execute(select(self.model).order_by(self.model.login))
+        return result.scalars().all()
+
+user = CRUDUser(User)
+
+
+-----------------------------
+--- File: backend/app/crud/sphere.py ---
+-----------------------------
+from typing import Any
+from sqlalchemy import or_
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
+from sqlalchemy.orm import selectinload
+
+from app.crud.base import CRUDBase
+from app.models import Sphere, User
+from app.schemas.sphere import SphereCreate, SphereUpdate
+
+class CRUDSphere(CRUDBase[Sphere, SphereCreate]):
+    async def get_multi_for_user(self, db: AsyncSession, *, user_id: int) -> list[Sphere]:
+        """
+        Get all spheres a user has access to (owner, reader, or editor).
+        """
+        query = (
+            select(self.model)
+            .options(selectinload(self.model.owner))
+            .where(
+                or_(
+                    self.model.user_id == user_id,
+                    self.model.readers.any(User.id == user_id),
+                    self.model.editors.any(User.id == user_id)
+                )
+            )
+            .order_by(self.model.name)
+        )
+        result = await db.execute(query)
+        return result.scalars().unique().all()
+
+    async def create_with_owner(
+        self, db: AsyncSession, *, obj_in: SphereCreate, owner_id: int
+    ) -> Sphere:
+        # Fetch users for relationships
+        readers = []
+        if obj_in.reader_ids:
+            result = await db.execute(select(User).where(User.id.in_(obj_in.reader_ids)))
+            readers = result.scalars().all()
+
+        editors = []
+        if obj_in.editor_ids:
+            result = await db.execute(select(User).where(User.id.in_(obj_in.editor_ids)))
+            editors = result.scalars().all()
+        
+        db_obj = self.model(
+            name=obj_in.name,
+            description=obj_in.description,
+            user_id=owner_id,
+            readers=readers,
+            editors=editors,
+        )
+        db.add(db_obj)
+        await db.commit()
+        await db.refresh(db_obj, ["owner"])
+        return db_obj
+
+    async def update(
+        self, db: AsyncSession, *, db_obj: Sphere, obj_in: SphereUpdate
+    ) -> Sphere:
+        update_data = obj_in.model_dump(exclude_unset=True)
+
+        # Handle relationships separately
+        if "reader_ids" in update_data:
+            reader_ids = update_data.pop("reader_ids")
+            if reader_ids is not None:
+                result = await db.execute(select(User).where(User.id.in_(reader_ids)))
+                db_obj.readers = result.scalars().all()
+
+        if "editor_ids" in update_data:
+            editor_ids = update_data.pop("editor_ids")
+            if editor_ids is not None:
+                result = await db.execute(select(User).where(User.id.in_(editor_ids)))
+                db_obj.editors = result.scalars().all()
+        
+        # Update scalar fields
+        for field, value in update_data.items():
+            setattr(db_obj, field, value)
+
+        db.add(db_obj)
+        await db.commit()
+        await db.refresh(db_obj, ["owner"])
+        return db_obj
+
+sphere = CRUDSphere(Sphere)
+
+
+-----------------------------
+--- File: backend/app/schemas/dashboard.py ---
+-----------------------------
+from pydantic import BaseModel
+
+class BalanceItem(BaseModel):
+    id: int
+    name: str
+    balance: float
+
+class DashboardData(BaseModel):
+    total_balance: float
+    locations_balance: list[BalanceItem]
+    spheres_balance: list[BalanceItem] # Income - Spend
+
+
+-----------------------------
+--- File: backend/app/schemas/location.py ---
+-----------------------------
+from pydantic import BaseModel, ConfigDict, Field
+from .user import UserRead
+
+class LocationBase(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    description: str | None = Field(None, max_length=255)
+
+class LocationCreate(LocationBase):
+    reader_ids: list[int] = []
+    editor_ids: list[int] = []
+
+class LocationUpdate(BaseModel):
+    name: str | None = Field(None, min_length=1, max_length=100)
+    description: str | None = Field(None, max_length=255)
+    reader_ids: list[int] | None = None
+    editor_ids: list[int] | None = None
+
+class LocationInDBBase(LocationBase):
+    id: int
+    owner_id: int
+    model_config = ConfigDict(from_attributes=True)
+
+class LocationRead(LocationInDBBase):
+    owner: UserRead
+
+
+-----------------------------
+--- File: backend/app/schemas/accounting_record.py ---
+-----------------------------
+import math
+from datetime import datetime
+from typing import Literal, Union
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.models.accounting_record import OperationType
+from .location import LocationRead
+from .sphere import SphereRead
+from .utils import PaginatedResponse
+
+
+# Base properties
+class RecordBase(BaseModel):
+    description: str | None = Field(None, max_length=255)
+    date: datetime | None = None
+
+
+# Properties to receive on creation
+class RecordCreateIncome(BaseModel):
+    type: Literal["Income"]
+    sum: float = Field(..., gt=0, description="Сумма должна быть положительной")
+    location_id: int
+    sphere_id: int
+
+
+class RecordCreateSpend(BaseModel):
+    type: Literal["Spend"]
+    sum: float = Field(..., gt=0, description="Сумма должна быть положительной")
+    location_id: int
+    sphere_id: int
+
+
+class RecordCreateTransfer(BaseModel):
+    type: Literal["Transfer"]
+    sum: float = Field(..., gt=0, description="Сумма должна быть положительной")
+    description: str | None = Field(None, max_length=255)
+    date: datetime | None = None
+    
+    # Nested discriminator for transfer type
+    transfer_type: Literal["location", "sphere"]
+    
+    from_location_id: int | None = None
+    to_location_id: int | None = None
+    sphere_id: int | None = None # Required for location transfers
+
+    from_sphere_id: int | None = None
+    to_sphere_id: int | None = None
+    location_id: int | None = None # Required for sphere transfers
+
+    @model_validator(mode='after')
+    def check_transfer_fields(self) -> 'RecordCreateTransfer':
+        if self.transfer_type == 'location':
+            if not all([self.from_location_id, self.to_location_id, self.sphere_id]):
+                raise ValueError("For location transfer, 'from_location_id', 'to_location_id', and 'sphere_id' are required.")
+            if self.from_location_id == self.to_location_id:
+                raise ValueError("Source and destination locations cannot be the same.")
+        elif self.transfer_type == 'sphere':
+            if not all([self.from_sphere_id, self.to_sphere_id, self.location_id]):
+                raise ValueError("For sphere transfer, 'from_sphere_id', 'to_sphere_id', and 'location_id' are required.")
+            if self.from_sphere_id == self.to_sphere_id:
+                 raise ValueError("Source and destination spheres cannot be the same.")
+        return self
+
+
+RecordCreate = Union[RecordCreateIncome, RecordCreateSpend, RecordCreateTransfer]
+# Pydantic v2 needs Annotated for discriminated unions in some contexts, but FastAPI handles this well.
+# For direct Pydantic usage, you might use:
+# from typing import Annotated
+# RecordCreate = Annotated[Union[...], Field(discriminator='type')]
+
+
+# Properties to return to client
+class RecordRead(RecordBase):
+    id: int
+    accounting_id: int
+    operation_type: OperationType
+    is_transfer: bool
+    sum: float
+    owner_id: int
+    location: LocationRead | None
+    sphere: SphereRead | None
+    
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PaginatedRecordRead(PaginatedResponse[RecordRead]):
+    pass
+
+
+-----------------------------
+--- File: backend/app/schemas/user.py ---
+-----------------------------
+from pydantic import BaseModel, ConfigDict, Field, EmailStr
+
+# Base properties shared by all user-related schemas
+class UserBase(BaseModel):
+    login: str = Field(..., min_length=3, max_length=50)
+    description: str | None = Field(None, max_length=255)
+
+# Properties to receive via API on creation
+class UserCreate(UserBase):
+    password: str = Field(..., min_length=8)
+
+# Properties to receive via API on update
+class UserUpdate(UserBase):
+    password: str | None = Field(None, min_length=8)
+
+# Properties stored in DB
+class UserInDBBase(UserBase):
+    id: int
+    is_admin: bool = False
+    model_config = ConfigDict(from_attributes=True)
+
+class UserInDB(UserInDBBase):
+    hashed_password: str
+
+# Properties to return to client
+class UserRead(UserInDBBase):
+    pass # For now, it's the same as UserInDBBase. Later we can add friends, etc.
+
+
+-----------------------------
+--- File: backend/app/schemas/sphere.py ---
+-----------------------------
+from pydantic import BaseModel, ConfigDict, Field
+from .user import UserRead
+
+class SphereBase(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    description: str | None = Field(None, max_length=255)
+
+class SphereCreate(SphereBase):
+    reader_ids: list[int] = []
+    editor_ids: list[int] = []
+
+class SphereUpdate(BaseModel):
+    name: str | None = Field(None, min_length=1, max_length=100)
+    description: str | None = Field(None, max_length=255)
+    reader_ids: list[int] | None = None
+    editor_ids: list[int] | None = None
+
+class SphereInDBBase(SphereBase):
+    id: int
+    owner_id: int
+    model_config = ConfigDict(from_attributes=True)
+
+class SphereRead(SphereInDBBase):
+    owner: UserRead
+
+
+-----------------------------
+--- File: backend/app/schemas/utils.py ---
+-----------------------------
+from pydantic import BaseModel, Field
+from typing import Generic, TypeVar, List
+
+T = TypeVar('T')
+
+class PaginatedResponse(BaseModel, Generic[T]):
+    total: int = Field(..., description="Total number of items")
+    page: int = Field(..., ge=1, description="Current page number")
+    size: int = Field(..., ge=1, description="Number of items per page")
+    pages: int = Field(..., ge=0, description="Total number of pages")
+    items: List[T]
+
+
+-----------------------------
+--- File: backend/app/schemas/token.py ---
+-----------------------------
+from pydantic import BaseModel
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+class TokenPayload(BaseModel):
+    sub: str | None = None
+
+
+-----------------------------
+--- File: backend/app/main.py ---
+-----------------------------
+from fastapi import FastAPI
+from app.api.v1.api import api_router
+from app.core.config import settings
+
+app = FastAPI(
+    title=settings.PROJECT_NAME,
+    openapi_url=f"{settings.API_V1_STR}/openapi.json"
+)
+
+app.include_router(api_router, prefix=settings.API_V1_STR)
+
+@app.get("/", tags=["Root"])
+async def read_root():
+    return {"message": "Welcome to Financier API"}
+
+
+-----------------------------
+--- File: backend/app/db/base.py ---
+-----------------------------
+from app.db.base_class import Base
+from app.models.user import User
+from app.models.sphere import Sphere
+from app.models.location import Location
+from app.models.accounting_record import AccountingRecord
+
+
+-----------------------------
+--- File: backend/app/db/session.py ---
+-----------------------------
+from typing import AsyncGenerator
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker
+
+from app.core.config import settings
+
+async_engine = create_async_engine(
+    str(settings.ASYNC_DATABASE_URI),
+    pool_pre_ping=True,
+    echo=False, # Set to True for debugging SQL queries
+)
+
+AsyncSessionLocal = sessionmaker(
+    bind=async_engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+    autocommit=False,
+    autoflush=False,
+)
+
+async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
+    async with AsyncSessionLocal() as session:
+        yield session
+
+
+-----------------------------
+--- File: .env ---
+-----------------------------
+# Backend API Settings
+PROJECT_NAME="Финансист"
+API_V1_STR="/api/v1"
+
+# JWT Settings
+# Для генерации надежного ключа можно использовать: openssl rand -hex 32
+SECRET_KEY=your_super_secret_key_for_jwt_that_should_be_long_and_random
+ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=60
+
+# PostgreSQL Settings
+POSTGRES_SERVER=db
+POSTGRES_USER=financier
+POSTGRES_PASSWORD=financier_password
+POSTGRES_DB=financier_db
+POSTGRES_PORT=5432
+
+# Test PostgreSQL Settings (используются в docker-compose.test.yml)
+TEST_POSTGRES_SERVER=db_test
+TEST_POSTGRES_DB=financier_test_db
+
+
+-----------------------------
+--- File: .env.example ---
+-----------------------------
+# Backend API Settings
+PROJECT_NAME="Финансист"
+API_V1_STR="/api/v1"
+
+# JWT Settings
+# Для генерации надежного ключа можно использовать: openssl rand -hex 32
+SECRET_KEY=your_super_secret_key_for_jwt_that_should_be_long_and_random
+ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=60
+
+# PostgreSQL Settings
+POSTGRES_SERVER=db
+POSTGRES_USER=financier
+POSTGRES_PASSWORD=financier_password
+POSTGRES_DB=financier_db
+POSTGRES_PORT=5432
+
+# Test PostgreSQL Settings (используются в docker-compose.test.yml)
+TEST_POSTGRES_SERVER=db_test
+TEST_POSTGRES_DB=financier_test_db
+
+
+-----------------------------
+--- File: .gitignore ---
+-----------------------------
+# Environments
+.env*
+!.env.example
+
+# Docker
+docker-compose.override.yml
+
+# Python
+__pycache__/
+*.py[codz]
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+pip-log.txt
+.venv
+venv/
+env/
+
+# Unit test / coverage reports
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# IDE
+.idea/
+.vscode/
+
+context.txt
+
+
+-----------------------------
+--- File: docker-compose.override.yml ---
+-----------------------------
+version: '3.8'
+
+services:
+  db:
+    ports:
+      - "5433:5432" # Use a different host port for the test DB
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB}_test # Use a different database name
+
+  api:
+    ports:
+      - "8001:8000"
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB}_test
+
+
+-----------------------------
+--- File: docker-compose.test.yml ---
+-----------------------------
+version: '3.8'
+
+services:
+  db_test:
+    image: postgres:15-alpine
+    container_name: financier_db_test
+    env_file:
+      - ./.env
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${TEST_POSTGRES_DB} # Используем тестовую БД
+    ports:
+      - "5433:5432" # Другой порт на хосте во избежание конфликтов
+
+  api_test:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: financier_api_test
+    # Команда для тестов: сначала миграции, потом запуск pytest
+    command: sh -c "alembic upgrade head && pytest"
+    volumes:
+      - ./backend:/app
+    env_file:
+      - ./.env
+    # Переопределяем переменные для подключения к тестовой БД
+    environment:
+      - POSTGRES_SERVER=${TEST_POSTGRES_SERVER}
+      - POSTGRES_DB=${TEST_POSTGRES_DB}
+    depends_on:
+      - db_test
+
+
+-----------------------------
+--- File: docker-compose.yml ---
+-----------------------------
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: financier_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/
+    env_file:
+      - ./.env
+    # Переменные для PostgreSQL берутся из .env файла
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: financier_api
+    command: >
+      sh -c "alembic upgrade head && 
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    volumes:
+      - ./backend:/app
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./.env
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+
+
+-----------------------------
+--- File: run-tests.sh ---
+-----------------------------
+#!/bin/bash
+set -e
+
+# Этот скрипт запускает тесты в изолированном Docker-окружении.
+
+# Запуск контейнеров в фоновом режиме
+docker-compose -f docker-compose.test.yml up -d --build
+
+# Выполнение pytest внутри контейнера api_test
+# --exit-code-from api_test дождется завершения тестов и вернет их код выхода.
+docker-compose -f docker-compose.test.yml run --rm api_test pytest
+
+# Сохраняем код выхода тестов
+EXIT_CODE=$?
+
+# Остановка и удаление контейнеров
+docker-compose -f docker-compose.test.yml down
+
+# Выход с кодом, который вернули тесты
+exit $EXIT_CODE
+
+

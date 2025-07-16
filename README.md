@@ -3,7 +3,17 @@ Multiplatform app for life
 
 1) Что такое alembic
 2) Что такое пагинация
-3) 
+3) Kubernetes изучить
+
+
+Запуск Окружения для Разработки:
+docker-compose up --build
+
+API будет доступен по адресу http://localhost:8000.
+Документация Swagger UI: http://localhost:8000/api/v1/docs.
+
+./run-tests.sh
+
 
 # Financier API Backend
 

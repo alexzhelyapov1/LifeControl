@@ -3,7 +3,7 @@
 !.env.example
 
 # Docker
-docker-compose.override.yml
+/docker-compose.override.yml
 
 # Python
 __pycache__/
@@ -26,7 +26,7 @@ wheels/
 .installed.cfg
 *.egg
 pip-log.txt
-.venv
+.venv/
 venv/
 env/
 
@@ -40,4 +40,14 @@ htmlcov/
 .idea/
 .vscode/
 
+# OS
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+# Lock files
+poetry.lock
+Pipfile.lock
+
+# Misc
 context.txt

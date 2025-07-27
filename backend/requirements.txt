@@ -8,6 +8,9 @@ alembic
 python-jose[cryptography]
 passlib[bcrypt]
 python-dotenv
+psycopg2-binary
+asyncpg
+python-multipart
 
 # Test dependencies
 pytest

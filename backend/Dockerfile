@@ -27,6 +27,7 @@ RUN pip install --no-cache /wheels/*
 COPY ./app ./app
 COPY ./alembic ./alembic
 COPY alembic.ini .
+COPY init_db.py .
 
 # Меняем владельца всех файлов на пользователя nonroot
 RUN chown -R nonroot:nonroot /app

@@ -1,3 +1,22 @@
+Logs commands for frontend:
+
+```bash
+cd /Users/alex_mac/Desktop/LifeControl/LifeControl && mkdir -p frontend
+cd frontend && npm create vite@latest . -- --template react-ts --yes
+npm install
+npm install axios react-router-dom @types/react-router-dom
+npm install -D tailwindcss postcss autoprefixer
+npx tailwindcss init -p
+npm run dev
+cd /Users/alex_mac/Desktop/LifeControl/LifeControl/frontend && sleep 3 && curl -s http://localhost:5173 | head -20
+ps aux | grep "npm run dev" | grep -v grep
+npm run dev
+npm install -D @tailwindcss/postcss
+npm uninstall react-router-dom @types/react-router-dom && npm install react-router-dom@6 @types/react-router-dom@6
+npm install react-router-dom@6
+```
+
+
 # LifeControl
 Multiplatform app for life
 

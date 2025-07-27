@@ -132,4 +132,35 @@ class CRUDAccountingRecord(CRUDBase[AccountingRecord, RecordCreate]):
         await db.commit()
         return result.rowcount
 
+    async def update_record(
+        self, db: AsyncSession, *, db_obj: AccountingRecord, obj_in: RecordCreate
+    ) -> AccountingRecord:
+        """
+        Update a single record. For transfers, this will update both related records.
+        """
+        if isinstance(obj_in, (RecordCreateIncome, RecordCreateSpend)):
+            # Update single record
+            db_obj.operation_type = OperationType.INCOME if isinstance(obj_in, RecordCreateIncome) else OperationType.SPEND
+            db_obj.sum = obj_in.sum
+            db_obj.location_id = obj_in.location_id
+            db_obj.sphere_id = obj_in.sphere_id
+            if hasattr(obj_in, 'description'):
+                db_obj.description = obj_in.description
+            if hasattr(obj_in, 'date'):
+                db_obj.date = obj_in.date
+            
+            await db.commit()
+            await db.refresh(db_obj, ["sphere", "location", "sphere.owner", "location.owner"])
+            return db_obj
+        
+        elif isinstance(obj_in, RecordCreateTransfer):
+            # For transfers, we need to update both records with the same accounting_id
+            # First, delete existing records for this accounting_id
+            await self.remove_by_accounting_id(db, accounting_id=db_obj.accounting_id, user_id=db_obj.user_id)
+            
+            # Then create new records
+            return (await self.create_record(db, obj_in=obj_in, owner_id=db_obj.user_id))[0]
+        
+        return db_obj
+
 record = CRUDAccountingRecord(AccountingRecord)

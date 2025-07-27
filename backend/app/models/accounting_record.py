@@ -10,14 +10,15 @@ class OperationType(enum.Enum):
     SPEND = "Spend"
 
 class AccountingRecord(Base):
+    id = Column(Integer, primary_key=True, index=True)
     accounting_id = Column(Integer, nullable=False, index=True)
-    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    user_id = Column(Integer, ForeignKey('user.id'), nullable=False)
     
     operation_type = Column(Enum(OperationType), nullable=False)
     is_transfer = Column(Boolean, default=False, nullable=False)
 
-    sphere_id = Column(Integer, ForeignKey('spheres.id', ondelete='SET NULL'), nullable=True)
-    location_id = Column(Integer, ForeignKey('locations.id', ondelete='SET NULL'), nullable=False)
+    sphere_id = Column(Integer, ForeignKey('sphere.id', ondelete='SET NULL'), nullable=True)
+    location_id = Column(Integer, ForeignKey('location.id', ondelete='SET NULL'), nullable=False)
     
     sum = Column(Numeric(12, 2), nullable=False)
     description = Column(String(255), nullable=True)

@@ -58,7 +58,7 @@ class ApiService {
     formData.append('username', username);
     formData.append('password', password);
     
-    const response: AxiosResponse<Token> = await this.api.post('/auth/login', formData, {
+    const response: AxiosResponse<Token> = await this.api.post('/auth/token', formData, {
       headers: {
         'Content-Type': 'multipart/form-data',
       },
@@ -67,12 +67,12 @@ class ApiService {
   }
 
   async register(userData: UserCreate): Promise<UserRead> {
-    const response: AxiosResponse<UserRead> = await this.api.post('/auth/register', userData);
+    const response: AxiosResponse<UserRead> = await this.api.post('/users/register', userData);
     return response.data;
   }
 
   async getCurrentUser(): Promise<UserRead> {
-    const response: AxiosResponse<UserRead> = await this.api.get('/auth/me');
+    const response: AxiosResponse<UserRead> = await this.api.get('/users/me');
     return response.data;
   }
 

@@ -1,10 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
+import { useNavigate } from 'react-router-dom';
 import apiService from '../services/api';
 import type { DashboardData, RecordRead, PaginatedRecordRead } from '../types/index';
 
 export const DashboardPage: React.FC = () => {
   const { user, logout } = useAuth();
+  const navigate = useNavigate();
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
   const [records, setRecords] = useState<RecordRead[]>([]);
   const [loading, setLoading] = useState(true);
@@ -176,7 +178,15 @@ export const DashboardPage: React.FC = () => {
 
               {/* Последние записи */}
               <div className="mb-8">
-                <h2 className="text-lg font-medium text-gray-900 mb-2">Последние записи</h2>
+                <div className="flex justify-between items-center mb-2">
+                  <h2 className="text-lg font-medium text-gray-900">Последние записи</h2>
+                  <button
+                    onClick={() => navigate('/records')}
+                    className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 text-sm"
+                  >
+                    Добавить запись
+                  </button>
+                </div>
                 <div className="bg-white shadow overflow-hidden sm:rounded-md">
                   {records.length === 0 ? (
                     <div className="px-4 py-5 sm:p-6 text-gray-400 text-center">Записей пока нет</div>

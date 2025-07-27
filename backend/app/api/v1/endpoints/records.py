@@ -77,3 +77,76 @@ async def create_record(
     
     created_records = await record_crud.create_record(db, obj_in=record_in, owner_id=current_user.id)
     return created_records
+
+
+@router.get("/{record_id}", response_model=RecordRead)
+async def read_record(
+    record_id: int,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Get a specific record by ID.
+    """
+    record = await record_crud.get(db, id=record_id)
+    if not record:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Record not found")
+    if record.owner_id != current_user.id and not current_user.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permissions")
+    return record
+
+
+@router.put("/{record_id}", response_model=RecordRead)
+async def update_record(
+    record_id: int,
+    *,
+    db: AsyncSession = Depends(get_db_session),
+    record_in: RecordCreate,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Update a financial record.
+    """
+    record = await record_crud.get(db, id=record_id)
+    if not record:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Record not found")
+    if record.owner_id != current_user.id and not current_user.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permissions")
+    
+    # Validate permissions for new resources
+    spheres_to_check = []
+    locations_to_check = []
+
+    if record_in.type in ["Income", "Spend"]:
+        spheres_to_check.append(record_in.sphere_id)
+        locations_to_check.append(record_in.location_id)
+    elif record_in.type == "Transfer":
+        if record_in.transfer_type == "location":
+            spheres_to_check.append(record_in.sphere_id)
+            locations_to_check.extend([record_in.from_location_id, record_in.to_location_id])
+        elif record_in.transfer_type == "sphere":
+            spheres_to_check.extend([record_in.from_sphere_id, record_in.to_sphere_id])
+            locations_to_check.append(record_in.location_id)
+
+    await _validate_resource_permissions(db, current_user, sphere_ids=spheres_to_check, location_ids=locations_to_check)
+    
+    updated_record = await record_crud.update_record(db, db_obj=record, obj_in=record_in)
+    return updated_record
+
+
+@router.delete("/{record_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_record(
+    record_id: int,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Delete a financial record.
+    """
+    record = await record_crud.get(db, id=record_id)
+    if not record:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Record not found")
+    if record.owner_id != current_user.id and not current_user.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permissions")
+    
+    await record_crud.remove(db, id=record_id)

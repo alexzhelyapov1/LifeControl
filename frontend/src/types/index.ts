@@ -86,6 +86,8 @@ export interface RecordCreateIncome {
   sum: number;
   location_id: number;
   sphere_id: number;
+  description?: string;
+  date?: string;
 }
 
 export interface RecordCreateSpend {
@@ -93,6 +95,8 @@ export interface RecordCreateSpend {
   sum: number;
   location_id: number;
   sphere_id: number;
+  description?: string;
+  date?: string;
 }
 
 export interface RecordCreateTransfer {

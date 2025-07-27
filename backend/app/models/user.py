@@ -6,11 +6,12 @@ from app.db.base_class import Base
 # Association table for friends (many-to-many self-referencing)
 user_friends_association = Table(
     'user_friends_association', Base.metadata,
-    Column('user_id', Integer, ForeignKey('users.id'), primary_key=True),
-    Column('friend_id', Integer, ForeignKey('users.id'), primary_key=True)
+    Column('user_id', Integer, ForeignKey('user.id'), primary_key=True),
+    Column('friend_id', Integer, ForeignKey('user.id'), primary_key=True)
 )
 
 class User(Base):
+    id = Column(Integer, primary_key=True, index=True)
     login = Column(String(50), unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=False)
     description = Column(String(255), nullable=True)

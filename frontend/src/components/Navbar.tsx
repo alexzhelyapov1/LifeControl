@@ -5,6 +5,7 @@ const navItems = [
   { to: '/dashboard', label: 'Дашборд' },
   { to: '/spheres', label: 'Сферы' },
   { to: '/locations', label: 'Локации' },
+  { to: '/records', label: 'Записи' },
 ];
 
 export const Navbar: React.FC = () => {

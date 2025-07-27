@@ -7,6 +7,7 @@ import { DashboardPage } from './pages/DashboardPage';
 import { SpheresPage } from './pages/SpheresPage';
 import { Navbar } from './components/Navbar';
 import { LocationsPage } from './pages/LocationsPage';
+import { RecordsPage } from './pages/RecordsPage';
 import './App.css';
 
 function App() {
@@ -41,6 +42,15 @@ function App() {
                 <ProtectedRoute>
                   <Navbar />
                   <LocationsPage />
+                </ProtectedRoute>
+              } 
+            />
+            <Route 
+              path="/records" 
+              element={
+                <ProtectedRoute>
+                  <Navbar />
+                  <RecordsPage />
                 </ProtectedRoute>
               } 
             />

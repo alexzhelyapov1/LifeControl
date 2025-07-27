@@ -16,6 +16,20 @@ npm uninstall react-router-dom @types/react-router-dom && npm install react-rout
 npm install react-router-dom@6
 ```
 
+Build all
+```
+sudo apt update && sudo apt install -y postgresql postgresql-contrib
+sudo systemctl start postgresql && sudo systemctl enable postgresql
+sudo -u postgres psql -c "CREATE USER financier WITH PASSWORD 'financier_password';"
+sudo -u postgres psql -c "CREATE DATABASE financier OWNER financier;"
+sed -i 's/POSTGRES_SERVER=db/POSTGRES_SERVER=localhost/' .env
+cd backend && python3 -m venv venv
+source venv/bin/activate.fish && pip install -r requirements.txt
+source venv/bin/activate.fish && pip install asyncpg
+source venv/bin/activate.fish && alembic init alembic
+source venv/bin/activate.fish && alembic upgrade head
+docker-compose up --build -d
+```
 
 # LifeControl
 Multiplatform app for life

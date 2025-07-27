@@ -10,7 +10,8 @@ import type {
   LocationRead,
   RecordCreate,
   RecordRead,
-  PaginatedRecordRead
+  PaginatedRecordRead,
+  DashboardData
 } from '../types/index';
 
 class ApiService {
@@ -150,6 +151,12 @@ class ApiService {
 
   async deleteRecord(id: number): Promise<void> {
     await this.api.delete(`/records/${id}`);
+  }
+
+  // Dashboard endpoint
+  async getDashboardData(): Promise<DashboardData> {
+    const response: AxiosResponse<DashboardData> = await this.api.get('/dashboard/');
+    return response.data;
   }
 }
 

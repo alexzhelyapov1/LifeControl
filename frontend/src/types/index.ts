@@ -151,4 +151,17 @@ export interface ApiResponse<T> {
 
 export interface ErrorResponse {
   detail: string;
+}
+
+// Dashboard types
+export interface BalanceItem {
+  id: number;
+  name: string;
+  balance: number;
+}
+
+export interface DashboardData {
+  total_balance: number;
+  locations_balance: BalanceItem[];
+  spheres_balance: BalanceItem[];
 } 

@@ -4,6 +4,9 @@ import { ProtectedRoute } from './components/ProtectedRoute';
 import { LoginPage } from './pages/LoginPage';
 import { RegisterPage } from './pages/RegisterPage';
 import { DashboardPage } from './pages/DashboardPage';
+import { SpheresPage } from './pages/SpheresPage';
+import { Navbar } from './components/Navbar';
+import { LocationsPage } from './pages/LocationsPage';
 import './App.css';
 
 function App() {
@@ -18,7 +21,26 @@ function App() {
               path="/dashboard" 
               element={
                 <ProtectedRoute>
+                  <Navbar />
                   <DashboardPage />
+                </ProtectedRoute>
+              } 
+            />
+            <Route 
+              path="/spheres" 
+              element={
+                <ProtectedRoute>
+                  <Navbar />
+                  <SpheresPage />
+                </ProtectedRoute>
+              } 
+            />
+            <Route 
+              path="/locations" 
+              element={
+                <ProtectedRoute>
+                  <Navbar />
+                  <LocationsPage />
                 </ProtectedRoute>
               } 
             />

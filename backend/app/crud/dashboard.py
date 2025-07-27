@@ -18,7 +18,7 @@ class CRUDDashboard:
                     )
                 )
             )
-            .where(AccountingRecord.user_id == user_id)
+            .where(AccountingRecord.owner_id == user_id)
         )
         total_balance_res = await db.execute(total_balance_query)
         total_balance = total_balance_res.scalar_one_or_none() or 0.0
@@ -36,7 +36,7 @@ class CRUDDashboard:
                 ).label("balance")
             )
             .join(AccountingRecord, AccountingRecord.location_id == Location.id)
-            .where(AccountingRecord.user_id == user_id)
+            .where(AccountingRecord.owner_id == user_id)
             .group_by(Location.id, Location.name)
             .order_by(Location.name)
         )
@@ -57,7 +57,7 @@ class CRUDDashboard:
             )
             .join(AccountingRecord, AccountingRecord.sphere_id == Sphere.id)
             .where(
-                AccountingRecord.user_id == user_id,
+                AccountingRecord.owner_id == user_id,
                 AccountingRecord.is_transfer == False
             )
             .group_by(Sphere.id, Sphere.name)

@@ -27,14 +27,14 @@ class CRUDAccountingRecord(CRUDBase[AccountingRecord, RecordCreate]):
         if size < 1: size = 1
 
         # Query for total count
-        count_query = select(func.count(self.model.id)).where(self.model.user_id == user_id)
+        count_query = select(func.count(self.model.id)).where(self.model.owner_id == user_id)
         total_count = (await db.execute(count_query)).scalar_one()
 
         # Query for items
         offset = (page - 1) * size
         query = (
             select(self.model)
-            .where(self.model.user_id == user_id)
+            .where(self.model.owner_id == user_id)
             .options(
                 selectinload(self.model.sphere).selectinload(Sphere.owner), 
                 selectinload(self.model.location).selectinload(Location.owner)
@@ -65,7 +65,7 @@ class CRUDAccountingRecord(CRUDBase[AccountingRecord, RecordCreate]):
             op_type = OperationType.INCOME if isinstance(obj_in, RecordCreateIncome) else OperationType.SPEND
             record = self.model(
                 accounting_id=acc_id,
-                user_id=owner_id,
+                owner_id=owner_id,
                 operation_type=op_type,
                 sum=obj_in.sum,
                 location_id=obj_in.location_id,
@@ -75,7 +75,7 @@ class CRUDAccountingRecord(CRUDBase[AccountingRecord, RecordCreate]):
             created_records.append(record)
         
         elif isinstance(obj_in, RecordCreateTransfer):
-            common_data = {"accounting_id": acc_id, "user_id": owner_id, "is_transfer": True}
+            common_data = {"accounting_id": acc_id, "owner_id": owner_id, "is_transfer": True}
             if obj_in.description: common_data["description"] = obj_in.description
             if obj_in.date: common_data["date"] = obj_in.date
 
@@ -119,14 +119,14 @@ class CRUDAccountingRecord(CRUDBase[AccountingRecord, RecordCreate]):
         db.add_all(created_records)
         await db.commit()
         for rec in created_records:
-            await db.refresh(rec, ["sphere", "location", "sphere.owner", "location.owner"])
+            await db.refresh(rec, ["sphere", "location"])
         return created_records
 
     async def remove_by_accounting_id(self, db: AsyncSession, *, accounting_id: int, user_id: int) -> int:
         """ Deletes all records for a given accounting_id and user_id. Returns number of deleted rows. """
         query = self.model.__table__.delete().where(
             self.model.accounting_id == accounting_id,
-            self.model.user_id == user_id
+            self.model.owner_id == user_id
         )
         result = await db.execute(query)
         await db.commit()
@@ -156,10 +156,10 @@ class CRUDAccountingRecord(CRUDBase[AccountingRecord, RecordCreate]):
         elif isinstance(obj_in, RecordCreateTransfer):
             # For transfers, we need to update both records with the same accounting_id
             # First, delete existing records for this accounting_id
-            await self.remove_by_accounting_id(db, accounting_id=db_obj.accounting_id, user_id=db_obj.user_id)
+            await self.remove_by_accounting_id(db, accounting_id=db_obj.accounting_id, user_id=db_obj.owner_id)
             
             # Then create new records
-            return (await self.create_record(db, obj_in=obj_in, owner_id=db_obj.user_id))[0]
+            return (await self.create_record(db, obj_in=obj_in, owner_id=db_obj.owner_id))[0]
         
         return db_obj
 

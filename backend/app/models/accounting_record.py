@@ -12,7 +12,7 @@ class OperationType(enum.Enum):
 class AccountingRecord(Base):
     id = Column(Integer, primary_key=True, index=True)
     accounting_id = Column(Integer, nullable=False, index=True)
-    user_id = Column(Integer, ForeignKey('user.id'), nullable=False)
+    owner_id = Column(Integer, ForeignKey('user.id'), nullable=False)
     
     operation_type = Column(Enum(OperationType), nullable=False)
     is_transfer = Column(Boolean, default=False, nullable=False)

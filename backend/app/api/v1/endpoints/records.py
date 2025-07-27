@@ -19,14 +19,14 @@ async def _validate_resource_permissions(db: AsyncSession, user: User, sphere_id
         sphere = await sphere_crud.get(db, id=sphere_id)
         if not sphere:
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"Sphere with id {sphere_id} not found.")
-        if user.id != sphere.user_id and not any(editor.id == user.id for editor in sphere.editors) and not user.is_admin:
+        if user.id != sphere.owner_id and not any(editor.id == user.id for editor in sphere.editors) and not user.is_admin:
             raise HTTPException(status.HTTP_403_FORBIDDEN, f"You don't have edit permissions for sphere '{sphere.name}'.")
     
     for location_id in set(location_ids):
         location = await location_crud.get(db, id=location_id)
         if not location:
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"Location with id {location_id} not found.")
-        if user.id != location.user_id and not any(editor.id == user.id for editor in location.editors) and not user.is_admin:
+        if user.id != location.owner_id and not any(editor.id == user.id for editor in location.editors) and not user.is_admin:
             raise HTTPException(status.HTTP_403_FORBIDDEN, f"You don't have edit permissions for location '{location.name}'.")
 
 

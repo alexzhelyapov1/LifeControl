@@ -19,7 +19,7 @@ class Location(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(100), nullable=False, index=True)
     description = Column(String(255), nullable=True)
-    user_id = Column(Integer, ForeignKey('user.id'), nullable=False)
+    owner_id = Column(Integer, ForeignKey('user.id'), nullable=False)
 
     owner = relationship("User", back_populates="locations")
 

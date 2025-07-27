@@ -17,7 +17,7 @@ class CRUDLocation(CRUDBase[Location, LocationCreate]):
             .options(selectinload(self.model.owner))
             .where(
                 or_(
-                    self.model.user_id == user_id,
+                    self.model.owner_id == user_id,
                     self.model.readers.any(User.id == user_id),
                     self.model.editors.any(User.id == user_id)
                 )
@@ -44,7 +44,7 @@ class CRUDLocation(CRUDBase[Location, LocationCreate]):
         db_obj = self.model(
             name=obj_in.name,
             description=obj_in.description,
-            user_id=owner_id,
+            owner_id=owner_id,
             readers=readers,
             editors=editors,
         )

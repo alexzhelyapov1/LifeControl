@@ -104,7 +104,7 @@ def get_resource_with_permissions_factory(
         if current_user.is_admin:
             return resource
 
-        if current_user.id == resource.user_id:
+        if current_user.id == resource.owner_id:
             return resource
 
         user_is_reader = any(reader.id == current_user.id for reader in resource.readers)
